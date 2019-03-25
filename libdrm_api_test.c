@@ -1,0 +1,228 @@
+#include <assert.h>
+#include <inttypes.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
+#include <string.h>
+#include "xf86drm.h"
+#include "xf86drmMode.h"
+#include "libdrm_util.h"
+
+static 
+inline int64_t U642I64(uint64_t val)
+{
+        return (int64_t)*((int64_t *)&val);
+}
+
+int fd;
+drmModeResPtr res = NULL;
+int content_prop_value;
+
+static void
+dump_blob(uint32_t blob_id)
+{
+        uint32_t i;
+        unsigned char *blob_data;
+        drmModePropertyBlobPtr blob;
+
+        blob = drmModeGetPropertyBlob(fd, blob_id);
+        if (!blob) {
+                printf("\n");
+                return;
+        }
+
+        blob_data = blob->data;
+
+        for (i = 0; i < blob->length; i++) {
+                if (i % 16 == 0)
+                        printf("\n\t\t\t");
+                printf("%.2hhx", blob_data[i]);
+        }
+        printf("\n");
+
+        drmModeFreePropertyBlob(blob);
+}
+
+#define CONTENT_PROTECTION "Content Protection"
+
+static void
+dump_prop(uint32_t prop_id, uint64_t value)
+{
+        int i;
+        drmModePropertyPtr prop;
+
+        prop = drmModeGetProperty(fd, prop_id);
+
+//        if (strcmp(prop->name, CONTENT_PROTECTION) == 0)
+//	        printf(" %s:\n", prop->name);
+
+/*
+        printf("\t%d", prop_id);
+        if (!prop) {
+                printf("\n");
+                return;
+        }
+
+        printf(" %s:\n", prop->name);
+*/
+
+        if (strcmp(prop->name, CONTENT_PROTECTION) == 0)
+	{
+                printf("%s:\n", prop->name);
+
+        printf("\t\tflags:");
+        if (prop->flags & DRM_MODE_PROP_PENDING)
+                printf(" pending");
+        if (prop->flags & DRM_MODE_PROP_IMMUTABLE)
+                printf(" immutable");
+        if (drm_property_type_is(prop, DRM_MODE_PROP_SIGNED_RANGE))
+                printf(" signed range");
+        if (drm_property_type_is(prop, DRM_MODE_PROP_RANGE))
+                printf(" range");
+        if (drm_property_type_is(prop, DRM_MODE_PROP_ENUM))
+                printf(" enum");
+        if (drm_property_type_is(prop, DRM_MODE_PROP_BITMASK))
+                printf(" bitmask");
+        if (drm_property_type_is(prop, DRM_MODE_PROP_BLOB))
+                printf(" blob");
+        if (drm_property_type_is(prop, DRM_MODE_PROP_OBJECT))
+                printf(" object");
+        printf("\n");
+
+	if (drm_property_type_is(prop, DRM_MODE_PROP_SIGNED_RANGE)) {
+                printf("\t\tvalues:");
+                for (i = 0; i < prop->count_values; i++)
+                        printf(" %"PRId64, U642I64(prop->values[i]));
+                printf("\n");
+        }
+
+        if (drm_property_type_is(prop, DRM_MODE_PROP_RANGE)) {
+                printf("\t\tvalues:");
+                for (i = 0; i < prop->count_values; i++)
+                        printf(" %"PRIu64, prop->values[i]);
+                printf("\n");
+        }
+
+        if (drm_property_type_is(prop, DRM_MODE_PROP_ENUM)) {
+                printf("\t\tenums:");
+                for (i = 0; i < prop->count_enums; i++)
+                        printf(" %s=%llu", prop->enums[i].name,
+                               prop->enums[i].value);
+                printf("\n");
+        } else if (drm_property_type_is(prop, DRM_MODE_PROP_BITMASK)) {
+                printf("\t\tvalues:");
+                for (i = 0; i < prop->count_enums; i++)
+                        printf(" %s=0x%llx", prop->enums[i].name,
+                               (1LL << prop->enums[i].value));
+                printf("\n");
+        } else {
+                assert(prop->count_enums == 0);
+        }
+
+        if (drm_property_type_is(prop, DRM_MODE_PROP_BLOB)) {
+                printf("\t\tblobs:\n");
+                for (i = 0; i < prop->count_blobs; i++)
+                        dump_blob(prop->blob_ids[i]);
+                printf("\n");
+        } else {
+                assert(prop->count_blobs == 0);
+        }
+
+        printf("\t\tvalue:");
+        if (drm_property_type_is(prop, DRM_MODE_PROP_BLOB))
+                dump_blob(value);
+        else if (drm_property_type_is(prop, DRM_MODE_PROP_SIGNED_RANGE))
+                printf(" %"PRId64"\n", value);
+        else {
+		content_prop_value = value;
+                printf(" %"PRIu64"\n", value);
+                printf("kromli\n");
+	}
+
+	}
+        drmModeFreeProperty(prop);
+}
+
+static 
+void listObjectProperties(uint32_t id, uint32_t type)
+{
+        unsigned int i;
+        drmModeObjectPropertiesPtr props;
+
+        props = drmModeObjectGetProperties(fd, id, type);
+
+        if (!props) {
+                printf("\tNo properties: %s.\n", strerror(errno));
+                return;
+        }
+
+        for (i = 0; i < props->count_props; i++)
+		dump_prop(props->props[i], props->prop_values[i]);
+
+        drmModeFreeObjectProperties(props);
+}
+
+static 
+void listConnectorProperties(void)
+{
+        int i;
+        drmModeConnectorPtr c;
+
+        for (i = 0; i < res->count_connectors; i++) {
+               c = drmModeGetConnector(fd, res->connectors[i]);
+               if (!c) {
+                       fprintf(stderr, "Could not get connector %u: %s\n",
+                               res->connectors[i], strerror(errno));
+                       continue;
+               }
+               printf("Connector %u (%s-%u)\n", c->connector_id,
+                       util_lookup_connector_type_name(c->connector_type),
+                       c->connector_type_id);
+		printf("Connectors status: %s\n", util_lookup_connector_status_name(c->connection));
+
+               listObjectProperties(c->connector_id,
+                                    DRM_MODE_OBJECT_CONNECTOR);
+
+               drmModeFreeConnector(c);
+        }
+}
+
+
+int main(int argc, char* argv[]) { 
+    int ret;
+
+    fd = drmOpen("i915", NULL);
+
+    if (fd<0) {
+        printf("drmOpen error: %d\n", fd);
+        return fd;
+    }
+
+    printf("drmOpen success\n");
+
+    res = drmModeGetResources(fd);
+    if (!res) {
+                fprintf(stderr, "Failed to get resources: %s\n",
+                        strerror(errno));
+                ret = 1;
+                goto done;
+    }
+
+    listConnectorProperties();
+
+    printf("kromli %d\n", content_prop_value);
+    drmModeFreeResources(res);
+
+done:
+ 
+    fd = drmClose(fd);
+
+    if (fd<0){
+        printf("drmClose error: %d\n", fd);
+        return fd;
+    }
+    
+    printf("drmClose success\n");
+
+    return 0;
+}
